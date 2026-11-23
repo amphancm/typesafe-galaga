@@ -90,6 +90,9 @@ def record_to_snapshot(record: Mapping[str, Any]) -> GalagaSnapshot:
         for b in debug_state.get("player_bullets", ())
     )
     radar_grid = tuple(str(row) for row in debug_state.get("radar_grid", ()))
+    audio_state = state.get("audio", {})
+    raw_audio_events = audio_state.get("events", ()) if isinstance(audio_state, Mapping) else ()
+    audio_events = tuple(str(event) for event in raw_audio_events)
 
     return GalagaSnapshot(
         goal=str(
@@ -113,6 +116,7 @@ def record_to_snapshot(record: Mapping[str, Any]) -> GalagaSnapshot:
         recommended_evade_dir=str(tactical.get("recommended_evade_dir", "none")),
         best_target_x=_opt_int(tactical.get("best_target_x")),
         radar_grid=radar_grid,
+        audio_events=audio_events,
         previous_action=recent.get("previous_action"),
         previous_reward=float(recent.get("previous_reward", 0.0)),
         decision_horizon_frames=_int_or(reaction.get("action_hold_frames"), 8),
@@ -135,6 +139,7 @@ def load_demonstrations(
     paths: Sequence[Path],
     *,
     min_confidence: float = 0.0,
+    include_audio_obs: bool = True,
 ) -> BCDataset:
     """Load Jev JSONL decision logs into numeric RL observation/action tensors."""
     files = _expand_jsonl_paths(paths)
@@ -165,7 +170,7 @@ def load_demonstrations(
                     continue
 
                 snapshot = record_to_snapshot(record)
-                obs = encode_observation(snapshot)
+                obs = encode_observation(snapshot, include_audio=include_audio_obs)
 
                 raw_probs = record.get("probabilities", {})
                 probs = np.zeros(NUM_ACTIONS, dtype=np.float32)
@@ -198,13 +203,14 @@ def load_demonstrations(
 class _DummyGalagaSpaceEnv(gym.Env[np.ndarray, int]):
     """Lightweight space-only Gym env for initializing an SB3 PPO policy for BC."""
 
-    def __init__(self) -> None:
+    def __init__(self, obs_dim: int = OBSERVATION_DIM) -> None:
         super().__init__()
+        self._obs_dim = int(obs_dim)
         self.action_space = spaces.Discrete(NUM_ACTIONS)
         self.observation_space = spaces.Box(
             low=-1.0,
             high=1.0,
-            shape=(OBSERVATION_DIM,),
+            shape=(self._obs_dim,),
             dtype=np.float32,
         )
 
@@ -216,11 +222,11 @@ class _DummyGalagaSpaceEnv(gym.Env[np.ndarray, int]):
     ) -> tuple[np.ndarray, dict[str, Any]]:
         super().reset(seed=seed)
         del options
-        return np.zeros(OBSERVATION_DIM, dtype=np.float32), {}
+        return np.zeros(self._obs_dim, dtype=np.float32), {}
 
     def step(self, action: int) -> tuple[np.ndarray, float, bool, bool, dict[str, Any]]:
         del action
-        return np.zeros(OBSERVATION_DIM, dtype=np.float32), 0.0, True, False, {}
+        return np.zeros(self._obs_dim, dtype=np.float32), 0.0, True, False, {}
 
 
 def train_bc(
@@ -245,7 +251,7 @@ def train_bc(
     torch.manual_seed(seed)
     rng = np.random.default_rng(seed)
 
-    dummy_env = _DummyGalagaSpaceEnv()
+    dummy_env = _DummyGalagaSpaceEnv(obs_dim=int(dataset.observations.shape[1]))
     model = PPO(
         policy="MlpPolicy",
         env=dummy_env,
@@ -343,12 +349,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--soft-target-weight", type=float, default=0.5)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="cpu")
+    parser.add_argument(
+        "--audio-obs",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Include semantic audio event flags in BC observations (default: enabled)",
+    )
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
-    dataset = load_demonstrations(args.inputs, min_confidence=args.min_confidence)
+    dataset = load_demonstrations(
+        args.inputs,
+        min_confidence=args.min_confidence,
+        include_audio_obs=args.audio_obs,
+    )
     result = train_bc(
         dataset,
         model_path=args.model_path,

@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .actions import ACTION_TO_INDEX, FIRE_ACTIONS, FIRE_RELEASE_ACTION, JOYPAD_MOVEMENT, Action
-from .audio import AudioConfig, GalagaAudioEngine
+from .audio import AudioConfig, GalagaAudioEngine, extract_ram_audio_events
 from .dashboard import DashboardCommand, LiveDashboard
 from .policy import Decision, Policy
 from .state import OAM_END, OAM_START, PLAYER_Y, TILE_PLAYER_SHIP, GalagaStateParser, _read_score
@@ -228,9 +228,11 @@ def _run_realtime_dashboard(
     with ThreadPoolExecutor(max_workers=1, thread_name_prefix="typesafe-jev") as executor:
         while True:
             decision_updated = False
+            ram = _unwrap_ram(env)
             snapshot = parser.parse(
                 info,
-                _unwrap_ram(env),
+                ram,
+                audio_events=extract_ram_audio_events(ram),
                 previous_action=previous_action.value if previous_action else None,
                 previous_reward=previous_reward,
                 response_latency_ms=previous_latency_ms,
@@ -396,9 +398,11 @@ def run_episode(
             previous_latency_ms = 0.0
             actions = tuple(Action)
             for decision_index in range(max_decisions):
+                ram = _unwrap_ram(env)
                 snapshot = parser.parse(
                     info,
-                    _unwrap_ram(env),
+                    ram,
+                    audio_events=extract_ram_audio_events(ram),
                     previous_action=previous_action.value if previous_action else None,
                     previous_reward=previous_reward,
                     response_latency_ms=previous_latency_ms,

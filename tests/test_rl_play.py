@@ -19,6 +19,9 @@ def test_cli_rl_play_defaults_to_galaga() -> None:
 
     for subcmd in ("rl-bc", "rl-train", "rl-eval"):
         assert parser.parse_args([subcmd]).device == "cpu"
+    for subcmd in ("rl-bc", "rl-train"):
+        assert parser.parse_args([subcmd]).audio_obs is True
+        assert parser.parse_args([subcmd, "--no-audio-obs"]).audio_obs is False
 
 
 def test_play_rl_headless_with_stubbed_env_and_policy(monkeypatch: Any, tmp_path: Path) -> None:

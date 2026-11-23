@@ -84,6 +84,7 @@ class GalagaSnapshot:
     recommended_evade_dir: str = "none"
     best_target_x: int | None = None
     radar_grid: tuple[str, ...] = ()
+    audio_events: tuple[str, ...] = ()
     previous_action: str | None = None
     previous_reward: float = 0.0
     decision_horizon_frames: int = 8
@@ -152,6 +153,9 @@ class GalagaSnapshot:
                 "lives": self.lives,
                 "dead": self.dead,
                 "clear": self.clear,
+            },
+            "audio": {
+                "events": list(self.audio_events),
             },
         }
 
@@ -367,6 +371,7 @@ class GalagaStateParser:
         info: Mapping[str, Any] | None,
         ram: Sequence[int] | None,
         *,
+        audio_events: Sequence[str] | None = None,
         previous_action: str | None = None,
         previous_reward: float = 0.0,
         response_delay_frames: int = 0,
@@ -465,6 +470,7 @@ class GalagaStateParser:
             recommended_evade_dir=evade_dir,
             best_target_x=best_target_x,
             radar_grid=radar,
+            audio_events=tuple(audio_events) if audio_events is not None else (),
             previous_action=previous_action,
             previous_reward=previous_reward,
             decision_horizon_frames=self.decision_horizon_frames,

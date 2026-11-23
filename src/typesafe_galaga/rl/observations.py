@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import numpy as np
 
+from ..audio import AUDIO_EVENT_NAMES
 from ..state import (
     PLAYER_Y,
     PLAYFIELD_MAX_X,
@@ -15,10 +18,20 @@ from .actions import NUM_ACTIONS, index_from_action
 GRID_CELLS = RADAR_ROWS * RADAR_COLS
 MAX_OBSERVED_ENEMIES = 6
 MAX_OBSERVED_PROJECTILES = 4
+AUDIO_EVENT_DIM = len(AUDIO_EVENT_NAMES)
+AUDIO_EVENT_INDEX: dict[str, int] = {name: idx for idx, name in enumerate(AUDIO_EVENT_NAMES)}
+_AUDIO_EVENT_ALIASES: dict[str, str] = {
+    "death": "ship_explode",
+    "challenging_stage": "stage_clear",
+    "overworld": "stage_start",
+    "galaga": "stage_start",
+}
 
 # 15 player/tactical + 4 prev_action + 24 enemies (6*4) + 12 projectiles (4*3) + 99 radar grid = 154
+# + 10 semantic audio event flags = 164
 SCALAR_FEATURE_DIM = 15 + NUM_ACTIONS + (MAX_OBSERVED_ENEMIES * 4) + (MAX_OBSERVED_PROJECTILES * 3)
-OBSERVATION_DIM = SCALAR_FEATURE_DIM + GRID_CELLS
+BASE_OBSERVATION_DIM = SCALAR_FEATURE_DIM + GRID_CELLS
+OBSERVATION_DIM = BASE_OBSERVATION_DIM + AUDIO_EVENT_DIM
 
 _PLAYFIELD_SPAN = float(max(1, PLAYFIELD_MAX_X - PLAYFIELD_MIN_X))
 _RADAR_CELL_MAP: dict[str, float] = {
@@ -40,9 +53,44 @@ def _clip(value: float, low: float = -1.0, high: float = 1.0) -> float:
     return float(value)
 
 
-def encode_observation(snapshot: GalagaSnapshot) -> np.ndarray:
+def observation_dim(*, include_audio: bool = True) -> int:
+    """Return observation vector dimension with or without semantic audio event flags."""
+    return OBSERVATION_DIM if include_audio else BASE_OBSERVATION_DIM
+
+
+def infer_include_audio_from_shape(obs_shape: tuple[int, ...] | None) -> bool:
+    """Infer whether a saved policy expects audio flags from its observation_space.shape."""
+    if obs_shape is None or len(obs_shape) != 1:
+        return True
+    dim = int(obs_shape[0])
+    if dim == BASE_OBSERVATION_DIM:
+        return False
+    if dim == OBSERVATION_DIM:
+        return True
+    raise ValueError(
+        f"Unsupported observation dimension {dim}; expected {BASE_OBSERVATION_DIM} "
+        f"(without audio) or {OBSERVATION_DIM} (with audio)"
+    )
+
+
+def encode_audio_events(audio_events: Sequence[str]) -> np.ndarray:
+    """Encode semantic audio event names into a binary float32 vector of length AUDIO_EVENT_DIM."""
+    vec = np.zeros(AUDIO_EVENT_DIM, dtype=np.float32)
+    for event in audio_events:
+        canonical = _AUDIO_EVENT_ALIASES.get(event, event)
+        idx = AUDIO_EVENT_INDEX.get(canonical)
+        if idx is not None:
+            vec[idx] = 1.0
+    return vec
+
+
+def encode_observation(
+    snapshot: GalagaSnapshot,
+    *,
+    include_audio: bool = True,
+) -> np.ndarray:
     """Convert a GalagaSnapshot into a bounded float32 vector in [-1.0, 1.0]."""
-    obs = np.zeros(OBSERVATION_DIM, dtype=np.float32)
+    obs = np.zeros(observation_dim(include_audio=include_audio), dtype=np.float32)
     sx = snapshot.x
     norm_x = ((sx - PLAYFIELD_MIN_X) / _PLAYFIELD_SPAN) * 2.0 - 1.0
 
@@ -136,5 +184,8 @@ def encode_observation(snapshot: GalagaSnapshot) -> np.ndarray:
                 if val is not None:
                     obs[row_base + col_idx] = val
         row_base += RADAR_COLS
+
+    if include_audio and snapshot.audio_events:
+        obs[BASE_OBSERVATION_DIM:] = encode_audio_events(snapshot.audio_events)
 
     return obs

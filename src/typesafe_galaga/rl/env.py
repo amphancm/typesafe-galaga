@@ -1,15 +1,17 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import Any, ClassVar
 
 import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
+from ..audio import detect_audio_events
 from ..runner import DEFAULT_ROM_PATH
 from .actions import NUM_ACTIONS, action_from_index
 from .adapter import EmulatorBackend, GalagaEmulatorAdapter
-from .observations import OBSERVATION_DIM, encode_observation
+from .observations import encode_observation, observation_dim
 from .rewards import GalagaRewardCalculator, RewardConfig
 
 
@@ -30,6 +32,7 @@ class GalagaRLEnv(gym.Env[np.ndarray, int]):
         adapter: EmulatorBackend | None = None,
         capture_step_frames: bool = False,
         capture_audio_events: bool = False,
+        include_audio_obs: bool = True,
     ) -> None:
         super().__init__()
         if max_steps < 1:
@@ -40,12 +43,13 @@ class GalagaRLEnv(gym.Env[np.ndarray, int]):
         self.max_steps = max_steps
         self.random_noop_max = random_noop_max
         self.render_mode = render_mode
+        self.include_audio_obs = bool(include_audio_obs)
 
         self.action_space = spaces.Discrete(NUM_ACTIONS)
         self.observation_space = spaces.Box(
             low=-1.0,
             high=1.0,
-            shape=(OBSERVATION_DIM,),
+            shape=(observation_dim(include_audio=self.include_audio_obs),),
             dtype=np.float32,
         )
 
@@ -102,7 +106,7 @@ class GalagaRLEnv(gym.Env[np.ndarray, int]):
         self._episode_reward = 0.0
         self._last_snapshot = snapshot
 
-        obs = encode_observation(snapshot)
+        obs = encode_observation(snapshot, include_audio=self.include_audio_obs)
         info = {
             "rom_path": self.rom_path,
             "x": snapshot.x,
@@ -111,6 +115,7 @@ class GalagaRLEnv(gym.Env[np.ndarray, int]):
             "stage": snapshot.stage,
             "clear": snapshot.clear,
             "dead": snapshot.dead,
+            "audio_events": snapshot.audio_events,
             "steps": self._step_count,
             "episode_reward": self._episode_reward,
             "raw_info": raw_info,
@@ -124,6 +129,10 @@ class GalagaRLEnv(gym.Env[np.ndarray, int]):
         previous = self._last_snapshot
         step_result = self._adapter.step(int(action))
         current = step_result.snapshot
+        if self.include_audio_obs and not current.audio_events and self.ram is None:
+            fallback_events = tuple(detect_audio_events(previous, current))
+            if fallback_events:
+                current = replace(current, audio_events=fallback_events)
         self._step_count += 1
 
         breakdown = self._reward_calc.compute(
@@ -140,7 +149,7 @@ class GalagaRLEnv(gym.Env[np.ndarray, int]):
             step_result.truncated or (not terminated and self._step_count >= self.max_steps)
         )
 
-        obs = encode_observation(current)
+        obs = encode_observation(current, include_audio=self.include_audio_obs)
         info = {
             "rom_path": self.rom_path,
             "action": action_from_index(int(action)).value,
@@ -150,6 +159,7 @@ class GalagaRLEnv(gym.Env[np.ndarray, int]):
             "stage": current.stage,
             "clear": current.clear,
             "dead": current.dead,
+            "audio_events": current.audio_events,
             "steps": self._step_count,
             "episode_reward": self._episode_reward,
             "reward_breakdown": breakdown.to_dict(),

@@ -3,7 +3,7 @@ from __future__ import annotations
 import ctypes
 import ctypes.util
 import struct
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
@@ -53,6 +53,38 @@ ROM_SFX_SLOTS: dict[str, tuple[int, ...]] = {
     "one_up": (7, 8),
     "stage_clear": (13, 14, 15, 16, 17, 18),
 }
+
+# Canonical semantic audio event flags exposed to RL observations.
+AUDIO_EVENT_NAMES: tuple[str, ...] = (
+    "laser_shot",
+    "enemy_hit",
+    "boss_hit",
+    "boss_destroy",
+    "dive_swoop",
+    "ship_explode",
+    "one_up",
+    "stage_clear",
+    "stage_start",
+    "ambient",
+)
+
+AUDIO_EVENT_SLOTS: dict[str, tuple[int, ...]] = {
+    "laser_shot": ROM_SFX_SLOTS["laser_shot"],
+    "enemy_hit": ROM_SFX_SLOTS["enemy_hit"],
+    "boss_hit": ROM_SFX_SLOTS["boss_hit"],
+    "boss_destroy": ROM_SFX_SLOTS["boss_destroy"],
+    "dive_swoop": ROM_SFX_SLOTS["dive_swoop"],
+    "ship_explode": ROM_SFX_SLOTS["ship_explode"],
+    "one_up": ROM_SFX_SLOTS["one_up"],
+    "stage_clear": ROM_SFX_SLOTS["stage_clear"],
+    "stage_start": ROM_BGM_SLOTS["stage_start"],
+    "ambient": ROM_BGM_SLOTS["ambient"],
+}
+
+_SLOT_TO_AUDIO_EVENTS: dict[int, tuple[str, ...]] = {}
+for _event_name, _slots in AUDIO_EVENT_SLOTS.items():
+    for _slot in _slots:
+        _SLOT_TO_AUDIO_EVENTS[_slot] = (*_SLOT_TO_AUDIO_EVENTS.get(_slot, ()), _event_name)
 
 # Slots whose ROM sound scripts loop continuously until cleared in RAM
 _LOOPING_ROM_SLOTS: frozenset[int] = frozenset({24, 27, 33, 38})
@@ -119,9 +151,7 @@ def _build_nsf_for_slots(prg_rom: bytes, slots: Sequence[int]) -> bytes:
         raise ValueError("At least one ROM sound slot must be specified")
     for slot in slots:
         if not 0 <= int(slot) < ROM_SOUND_SLOT_COUNT:
-            raise ValueError(
-                f"ROM sound slot must be in 0..{ROM_SOUND_SLOT_COUNT - 1}, got {slot}"
-            )
+            raise ValueError(f"ROM sound slot must be in 0..{ROM_SOUND_SLOT_COUNT - 1}, got {slot}")
 
     # 6502 INIT routine placed in Galaga's free $FF padding at $8000:
     #   JSR $EADA        ; Galaga sound init
@@ -223,7 +253,9 @@ class GalagaRomAudioBank:
             self.sample_rate,
         )
         if err:
-            raise RuntimeError(f"libgme failed to open Galaga NSF data: {err.decode('utf-8', 'replace')}")
+            raise RuntimeError(
+                f"libgme failed to open Galaga NSF data: {err.decode('utf-8', 'replace')}"
+            )
 
         try:
             self._libgme.gme_ignore_silence(emu, 1)
@@ -246,9 +278,7 @@ class GalagaRomAudioBank:
             for idx in range(max_chunks):
                 err = self._libgme.gme_play(emu, chunk_samples, buf)
                 if err:
-                    raise RuntimeError(
-                        f"libgme playback error: {err.decode('utf-8', 'replace')}"
-                    )
+                    raise RuntimeError(f"libgme playback error: {err.decode('utf-8', 'replace')}")
                 frame_chunk = np.ctypeslib.as_array(buf).reshape(-1, 2).copy()
                 chunks.append(frame_chunk)
                 peak = int(np.max(np.abs(frame_chunk)))
@@ -261,9 +291,9 @@ class GalagaRomAudioBank:
                     if silent_chunks >= 4:  # 200 ms of silence -> sound finished
                         break
 
-            looping = (
-                len(key) == 1 and key[0] in _LOOPING_ROM_SLOTS
-            ) or (started and silent_chunks == 0 and len(chunks) == max_chunks)
+            looping = (len(key) == 1 and key[0] in _LOOPING_ROM_SLOTS) or (
+                started and silent_chunks == 0 and len(chunks) == max_chunks
+            )
 
             if last_active_chunk >= 0:
                 end_chunk = min(len(chunks), last_active_chunk + 2)
@@ -357,7 +387,10 @@ class RomSoundTracker:
 
     def sync(self, ram: Any) -> tuple[tuple[int, ...], tuple[int, ...]]:
         """Inspect NES RAM and return (started_slots, stopped_slots) for this frame."""
-        if ram is None or len(ram) < ROM_SOUND_CHANNEL_BASE + ROM_SOUND_SLOT_COUNT * ROM_SOUND_CHANNEL_STRIDE:
+        if (
+            ram is None
+            or len(ram) < ROM_SOUND_CHANNEL_BASE + ROM_SOUND_SLOT_COUNT * ROM_SOUND_CHANNEL_STRIDE
+        ):
             return ((), ())
 
         started: list[int] = []
@@ -365,11 +398,7 @@ class RomSoundTracker:
         for slot in range(ROM_SOUND_SLOT_COUNT):
             st = int(ram[ROM_SOUND_STATUS_ADDR + slot])
             seq = int(
-                ram[
-                    ROM_SOUND_CHANNEL_BASE
-                    + slot * ROM_SOUND_CHANNEL_STRIDE
-                    + ROM_SOUND_SEQ_OFFSET
-                ]
+                ram[ROM_SOUND_CHANNEL_BASE + slot * ROM_SOUND_CHANNEL_STRIDE + ROM_SOUND_SEQ_OFFSET]
             )
             prev_st = self._prev_status[slot]
             prev_seq = self._prev_seq[slot]
@@ -384,6 +413,38 @@ class RomSoundTracker:
             self._prev_seq[slot] = seq
 
         return (tuple(started), tuple(stopped))
+
+
+def active_rom_sound_slots(ram: Any) -> tuple[int, ...]:
+    """Return currently active Galaga ROM sound slots (status != 0) from NES RAM."""
+    if ram is None or len(ram) < ROM_SOUND_STATUS_ADDR + ROM_SOUND_SLOT_COUNT:
+        return ()
+    return tuple(
+        slot for slot in range(ROM_SOUND_SLOT_COUNT) if int(ram[ROM_SOUND_STATUS_ADDR + slot]) != 0
+    )
+
+
+def slots_to_audio_events(slots: Iterable[int]) -> tuple[str, ...]:
+    """Map Galaga ROM sound slot IDs to canonical semantic audio event names."""
+    matched: set[str] = set()
+    for slot in slots:
+        events = _SLOT_TO_AUDIO_EVENTS.get(int(slot))
+        if events:
+            matched.update(events)
+    if not matched:
+        return ()
+    return tuple(name for name in AUDIO_EVENT_NAMES if name in matched)
+
+
+def extract_ram_audio_events(
+    ram: Any,
+    *,
+    started_slots: Iterable[int] = (),
+) -> tuple[str, ...]:
+    """Extract canonical semantic audio events active or triggered in NES RAM."""
+    combined: set[int] = {int(slot) for slot in started_slots}
+    combined.update(active_rom_sound_slots(ram))
+    return slots_to_audio_events(combined)
 
 
 def detect_audio_events(

@@ -41,6 +41,7 @@ class TrainConfig:
     tensorboard_log: Path = Path("runs/galaga_ppo")
     resume_from: Path | None = None
     target_clear_rate: float | None = None
+    include_audio_obs: bool = True
 
 
 def _linear_schedule(initial_value: float, min_value: float) -> Callable[[float], float]:
@@ -56,6 +57,7 @@ def _make_env(
     frames_per_decision: int,
     max_steps: int,
     random_noop_max: int,
+    include_audio_obs: bool,
     seed: int,
     rank: int,
 ) -> Callable[[], Any]:
@@ -66,6 +68,7 @@ def _make_env(
             max_steps=max_steps,
             random_noop_max=random_noop_max,
             render_mode="rgb_array",
+            include_audio_obs=include_audio_obs,
         )
         env.reset(seed=seed + rank)
         return env
@@ -176,6 +179,7 @@ def train_ppo(config: TrainConfig) -> Path:
             frames_per_decision=config.frames_per_decision,
             max_steps=config.max_steps,
             random_noop_max=config.random_noop_max,
+            include_audio_obs=config.include_audio_obs,
             seed=config.seed,
             rank=rank,
         )
@@ -186,18 +190,27 @@ def train_ppo(config: TrainConfig) -> Path:
 
     try:
         if config.resume_from is not None:
-            model = PPO.load(
-                str(config.resume_from),
-                env=vec_env,
-                device=config.device,
-                tensorboard_log=str(config.tensorboard_log),
-                custom_objects={
-                    "learning_rate": _linear_schedule(
-                        config.learning_rate, config.min_learning_rate
-                    ),
-                    "ent_coef": config.ent_coef,
-                },
-            )
+            try:
+                model = PPO.load(
+                    str(config.resume_from),
+                    env=vec_env,
+                    device=config.device,
+                    tensorboard_log=str(config.tensorboard_log),
+                    custom_objects={
+                        "learning_rate": _linear_schedule(
+                            config.learning_rate, config.min_learning_rate
+                        ),
+                        "ent_coef": config.ent_coef,
+                    },
+                )
+            except ValueError as exc:
+                if "Observation spaces do not match" in str(exc):
+                    hint = (
+                        "Pass --no-audio-obs to resume a legacy 154-dim model, "
+                        "or omit --resume-from to train a new audio-aware model from scratch."
+                    )
+                    raise ValueError(f"{exc}. {hint}") from exc
+                raise
         else:
             model = PPO(
                 policy="MlpPolicy",
@@ -218,7 +231,12 @@ def train_ppo(config: TrainConfig) -> Path:
             )
 
         best_model_path = config.model_path.with_name(f"{config.model_path.stem}_best.zip")
-        print(f"Training PPO on device={model.device} with {config.num_envs} envs", flush=True)
+        obs_dim = vec_env.observation_space.shape[0]
+        print(
+            f"Training PPO on device={model.device} with {config.num_envs} envs "
+            f"(obs_dim={obs_dim}, audio_obs={config.include_audio_obs})",
+            flush=True,
+        )
         callbacks: list[BaseCallback] = [
             GalagaProgressCallback(
                 best_model_path=best_model_path,
@@ -277,6 +295,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Optional early-stop rolling clear rate in [0, 1] (e.g. 0.90)",
     )
+    parser.add_argument(
+        "--audio-obs",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Include semantic audio event flags in RL observations (default: enabled)",
+    )
     return parser
 
 
@@ -304,6 +328,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         tensorboard_log=args.tensorboard_log,
         resume_from=args.resume_from,
         target_clear_rate=args.target_clear_rate,
+        include_audio_obs=args.audio_obs,
     )
     train_ppo(config)
     return 0

@@ -17,7 +17,7 @@ from ..state import GalagaSnapshot
 from .actions import RL_ACTIONS, action_from_index
 from .env import GalagaRLEnv
 from .hybrid import HybridConfig, HybridPolicy
-from .observations import encode_observation
+from .observations import encode_observation, infer_include_audio_from_shape
 
 
 class RLPolicy:
@@ -35,11 +35,14 @@ class RLPolicy:
         self._policy = self.model.policy
         self._device = self.model.device
         self.deterministic = deterministic
+        self.include_audio_obs = infer_include_audio_from_shape(
+            getattr(self.model.observation_space, "shape", None)
+        )
 
     def choose(self, snapshot: GalagaSnapshot, actions: Sequence[Action]) -> Decision:
         del actions
         started = time.perf_counter()
-        obs = encode_observation(snapshot)
+        obs = encode_observation(snapshot, include_audio=self.include_audio_obs)
         obs_tensor = torch.as_tensor(obs, device=self._device).unsqueeze(0)
         with torch.inference_mode():
             dist = self._policy.get_distribution(obs_tensor)
@@ -107,6 +110,7 @@ def play_rl(
         render_mode=render_mode,
         capture_step_frames=(display == "dashboard"),
         capture_audio_events=use_audio,
+        include_audio_obs=getattr(rl_policy, "include_audio_obs", True),
     )
     target_fps = max(1, round(60 * speed))
     dashboard = LiveDashboard(DashboardConfig(fps=target_fps)) if display == "dashboard" else None

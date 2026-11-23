@@ -6,7 +6,12 @@ from typing import Any, Protocol
 import numpy as np
 
 from ..actions import Action
-from ..audio import RomSoundTracker
+from ..audio import (
+    RomSoundTracker,
+    active_rom_sound_slots,
+    extract_ram_audio_events,
+    slots_to_audio_events,
+)
 from ..runner import DEFAULT_ROM_PATH, _unwrap_ram, create_galaga_env
 from ..state import GalagaSnapshot, GalagaStateParser
 from .actions import action_from_index, expand_macro_frames
@@ -125,10 +130,10 @@ class GalagaEmulatorAdapter:
                     break
 
         ram = _unwrap_ram(env)
-        if self.capture_audio_events:
-            self._sound_tracker.sync(ram)
+        started_slots, _ = self._sound_tracker.sync(ram)
+        audio_events = extract_ram_audio_events(ram, started_slots=started_slots)
 
-        snapshot = self.parser.parse(info, ram)
+        snapshot = self.parser.parse(info, ram, audio_events=audio_events)
         self._last_snapshot = snapshot
         return snapshot, dict(info)
 
@@ -151,22 +156,28 @@ class GalagaEmulatorAdapter:
         if self.capture_audio_events:
             self._last_step_audio_events = []
 
+        step_audio_slots: set[int] = set()
         ram = _unwrap_ram(env)
         for frame_act in frame_actions:
             frame, reward, terminated, truncated, info = env.step(frame_act)
             self._last_frame = frame
             if self.capture_step_frames:
                 self._last_step_frames.append(frame)
+            started, stopped = self._sound_tracker.sync(ram)
             if self.capture_audio_events:
-                self._last_step_audio_events.append(self._sound_tracker.sync(ram))
+                self._last_step_audio_events.append((started, stopped))
+            step_audio_slots.update(started)
+            step_audio_slots.update(active_rom_sound_slots(ram))
             native_reward += float(reward)
             frames_executed += 1
             if terminated or truncated:
                 break
 
+        audio_events = slots_to_audio_events(step_audio_slots)
         snapshot = self.parser.parse(
             info,
             ram,
+            audio_events=audio_events,
             previous_action=action.value,
             previous_reward=native_reward,
         )

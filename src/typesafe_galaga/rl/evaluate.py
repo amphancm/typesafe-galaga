@@ -12,6 +12,7 @@ from stable_baselines3 import PPO
 
 from ..runner import DEFAULT_ROM_PATH
 from .env import GalagaRLEnv
+from .observations import infer_include_audio_from_shape
 
 
 @dataclass(frozen=True)
@@ -65,12 +66,16 @@ def evaluate_policy(
     policy = model.policy
     policy.set_training_mode(False)
     policy_device = model.device
+    include_audio_obs = infer_include_audio_from_shape(
+        getattr(model.observation_space, "shape", None)
+    )
     env = GalagaRLEnv(
         rom_path=rom_path,
         frames_per_decision=frames_per_decision,
         max_steps=max_steps,
         random_noop_max=random_noop_max,
         render_mode="rgb_array",
+        include_audio_obs=include_audio_obs,
     )
 
     rewards: list[float] = []

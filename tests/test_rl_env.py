@@ -1,10 +1,19 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 
+from typesafe_galaga.audio import AUDIO_EVENT_NAMES, ROM_SOUND_STATUS_ADDR, extract_ram_audio_events
 from typesafe_galaga.rl.adapter import AdapterStepResult
 from typesafe_galaga.rl.env import GalagaRLEnv
-from typesafe_galaga.rl.observations import OBSERVATION_DIM, encode_observation
+from typesafe_galaga.rl.observations import (
+    AUDIO_EVENT_DIM,
+    AUDIO_EVENT_INDEX,
+    BASE_OBSERVATION_DIM,
+    OBSERVATION_DIM,
+    encode_observation,
+    infer_include_audio_from_shape,
+)
 from typesafe_galaga.state import GalagaEnemy, GalagaProjectile, GalagaSnapshot
 
 
@@ -108,4 +117,51 @@ def test_galaga_rl_env_reset_and_step() -> None:
     assert terminated is False
     assert truncated is False
     assert info2["score"] == 100
+    # Fallback audio detection from snapshot transition (score increased + bullet fired)
+    assert "laser_shot" in info2["audio_events"]
+    assert "enemy_hit" in info2["audio_events"]
+    assert obs2[BASE_OBSERVATION_DIM + AUDIO_EVENT_INDEX["laser_shot"]] == 1.0
+    assert obs2[BASE_OBSERVATION_DIM + AUDIO_EVENT_INDEX["enemy_hit"]] == 1.0
+    env.close()
+
+
+def test_encode_observation_audio_flags_and_legacy_mode() -> None:
+    assert OBSERVATION_DIM == BASE_OBSERVATION_DIM + AUDIO_EVENT_DIM
+    assert AUDIO_EVENT_DIM == len(AUDIO_EVENT_NAMES) == 10
+
+    snap = _snap(audio_events=("laser_shot", "dive_swoop", "ship_explode"))
+    obs_with_audio = encode_observation(snap, include_audio=True)
+    assert obs_with_audio.shape == (OBSERVATION_DIM,)
+    audio_slice = obs_with_audio[BASE_OBSERVATION_DIM:]
+    assert audio_slice[AUDIO_EVENT_INDEX["laser_shot"]] == 1.0
+    assert audio_slice[AUDIO_EVENT_INDEX["dive_swoop"]] == 1.0
+    assert audio_slice[AUDIO_EVENT_INDEX["ship_explode"]] == 1.0
+    assert audio_slice[AUDIO_EVENT_INDEX["enemy_hit"]] == 0.0
+    assert float(audio_slice.sum()) == 3.0
+
+    obs_legacy = encode_observation(snap, include_audio=False)
+    assert obs_legacy.shape == (BASE_OBSERVATION_DIM,)
+    assert np.array_equal(obs_legacy, obs_with_audio[:BASE_OBSERVATION_DIM])
+
+    assert infer_include_audio_from_shape((OBSERVATION_DIM,)) is True
+    assert infer_include_audio_from_shape((BASE_OBSERVATION_DIM,)) is False
+    with pytest.raises(ValueError, match="Unsupported observation dimension"):
+        infer_include_audio_from_shape((99,))
+
+
+def test_extract_ram_audio_events_combines_active_and_triggered_slots() -> None:
+    ram = bytearray(0x0800)
+    ram[ROM_SOUND_STATUS_ADDR + 32] = 2  # dive_swoop currently active
+    ram[ROM_SOUND_STATUS_ADDR + 36] = 2  # ambient currently active
+    events = extract_ram_audio_events(ram, started_slots=(34, 30))
+    assert events == ("laser_shot", "enemy_hit", "dive_swoop", "ambient")
+
+
+def test_galaga_rl_env_legacy_no_audio_obs_mode() -> None:
+    env = GalagaRLEnv(adapter=_FakeAdapter(), max_steps=10, include_audio_obs=False)
+    assert env.observation_space.shape == (BASE_OBSERVATION_DIM,)
+    obs, _ = env.reset(seed=42)
+    assert obs.shape == (BASE_OBSERVATION_DIM,)
+    obs2, _, _, _, _ = env.step(3)
+    assert obs2.shape == (BASE_OBSERVATION_DIM,)
     env.close()

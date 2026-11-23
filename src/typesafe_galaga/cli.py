@@ -104,6 +104,12 @@ def build_parser() -> argparse.ArgumentParser:
     rl_bc.add_argument("--min-confidence", type=float, default=0.0)
     rl_bc.add_argument("--epochs", type=int, default=30)
     rl_bc.add_argument("--device", default="cpu")
+    rl_bc.add_argument(
+        "--audio-obs",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Include semantic audio event flags in BC observations (default: enabled)",
+    )
 
     rl_train = subparsers.add_parser("rl-train", help="Train a PPO agent on NES Galaga")
     rl_train.add_argument("--rom", default=DEFAULT_ROM_PATH)
@@ -113,6 +119,12 @@ def build_parser() -> argparse.ArgumentParser:
     rl_train.add_argument("--model-path", type=Path, default=Path("models/galaga_ppo.zip"))
     rl_train.add_argument("--resume-from", type=Path, default=None)
     rl_train.add_argument("--device", default="cpu")
+    rl_train.add_argument(
+        "--audio-obs",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Include semantic audio event flags in RL observations (default: enabled)",
+    )
 
     rl_eval = subparsers.add_parser("rl-eval", help="Evaluate a trained Galaga PPO policy")
     rl_eval.add_argument("--model", type=Path, default=Path("models/galaga_ppo.zip"))
@@ -177,7 +189,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "rl-bc":
         from .rl.bc import load_demonstrations, train_bc
 
-        dataset = load_demonstrations(args.inputs, min_confidence=args.min_confidence)
+        dataset = load_demonstrations(
+            args.inputs,
+            min_confidence=args.min_confidence,
+            include_audio_obs=args.audio_obs,
+        )
         result = train_bc(
             dataset,
             model_path=args.model_path,
@@ -202,6 +218,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 model_path=args.model_path,
                 resume_from=args.resume_from,
                 device=args.device,
+                include_audio_obs=args.audio_obs,
             )
         )
         return 0
