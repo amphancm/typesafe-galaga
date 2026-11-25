@@ -17,7 +17,12 @@ from ..state import GalagaSnapshot
 from .actions import RL_ACTIONS, action_from_index
 from .env import GalagaRLEnv
 from .hybrid import HybridConfig, HybridPolicy
-from .observations import encode_observation, infer_include_audio_from_shape
+from .observations import (
+    FrameStackBuffer,
+    encode_observation,
+    infer_obs_config_from_shape,
+    observation_dim,
+)
 
 
 class RLPolicy:
@@ -35,15 +40,21 @@ class RLPolicy:
         self._policy = self.model.policy
         self._device = self.model.device
         self.deterministic = deterministic
-        self.include_audio_obs = infer_include_audio_from_shape(
+        self.include_audio_obs, self.frame_stack = infer_obs_config_from_shape(
             getattr(self.model.observation_space, "shape", None)
         )
+        single_obs_dim = observation_dim(include_audio=self.include_audio_obs)
+        self._frame_buffer = FrameStackBuffer(single_obs_dim, self.frame_stack)
+
+    def reset_episode(self) -> None:
+        self._frame_buffer.reset()
 
     def choose(self, snapshot: GalagaSnapshot, actions: Sequence[Action]) -> Decision:
         del actions
         started = time.perf_counter()
         obs = encode_observation(snapshot, include_audio=self.include_audio_obs)
-        obs_tensor = torch.as_tensor(obs, device=self._device).unsqueeze(0)
+        stacked_obs = self._frame_buffer.push(obs)
+        obs_tensor = torch.as_tensor(stacked_obs, device=self._device).unsqueeze(0)
         with torch.inference_mode():
             dist = self._policy.get_distribution(obs_tensor)
             probs_tensor = dist.distribution.probs.squeeze(0)
@@ -122,6 +133,8 @@ def play_rl(
 
     try:
         _, info = env.reset(seed=seed)
+        if hasattr(rl_policy, "reset_episode"):
+            rl_policy.reset_episode()
         if hybrid_policy is not None:
             hybrid_policy.reset_episode()
         if audio is not None:
@@ -214,6 +227,8 @@ def play_rl(
                         audio.toggle_mute()
                     if command == DashboardCommand.RESTART:
                         _, info = env.reset(seed=seed)
+                        if hasattr(rl_policy, "reset_episode"):
+                            rl_policy.reset_episode()
                         if hybrid_policy is not None:
                             hybrid_policy.reset_episode()
                         if audio is not None:

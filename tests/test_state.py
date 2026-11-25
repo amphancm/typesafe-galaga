@@ -36,3 +36,20 @@ def test_parse_buffer_and_sequence_ram_produce_identical_snapshots() -> None:
     snap_buf = GalagaStateParser().parse({"stage": 1, "lives": 3}, ram_bytes)
     snap_seq = GalagaStateParser().parse({"stage": 1, "lives": 3}, ram_list)
     assert snap_buf == snap_seq
+
+
+def test_radar_grid_prioritizes_threats_over_player_bullets() -> None:
+    from typesafe_galaga.state import GalagaEnemy, GalagaProjectile, _build_radar_grid
+
+    grid = _build_radar_grid(
+        player_x=100,
+        bullets=((100, 120),),
+        enemies=(
+            GalagaEnemy(
+                x=100, y=120, dx_from_player=0, dy_from_player=79, diving=True, aligned=True
+            ),
+        ),
+        projectiles=(GalagaProjectile(x=100, y=120, dx_from_player=0, dy_from_player=79),),
+    )
+    assert any("!" in row for row in grid)
+    assert not any("|" in row for row in grid)

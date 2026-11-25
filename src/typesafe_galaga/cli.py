@@ -110,12 +110,33 @@ def build_parser() -> argparse.ArgumentParser:
         default=True,
         help="Include semantic audio event flags in BC observations (default: enabled)",
     )
+    rl_bc.add_argument(
+        "--frame-stack",
+        type=int,
+        default=1,
+        help="Number of consecutive observation steps to stack (default: 1)",
+    )
 
     rl_train = subparsers.add_parser("rl-train", help="Train a PPO agent on NES Galaga")
     rl_train.add_argument("--rom", default=DEFAULT_ROM_PATH)
-    rl_train.add_argument("--timesteps", type=int, default=1_500_000)
+    rl_train.add_argument("--timesteps", type=int, default=5_000_000)
     rl_train.add_argument("--num-envs", type=int, default=8)
     rl_train.add_argument("--frames-per-decision", type=int, default=4)
+    rl_train.add_argument(
+        "--frame-stack",
+        type=int,
+        default=4,
+        help="Number of consecutive observation steps to stack (default: 4, 1 to disable)",
+    )
+    rl_train.add_argument(
+        "--normalize-reward",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Normalize rewards via VecNormalize during PPO training (default: enabled)",
+    )
+    rl_train.add_argument("--gamma", type=float, default=0.995)
+    rl_train.add_argument("--eval-freq", type=int, default=200_000)
+    rl_train.add_argument("--eval-episodes", type=int, default=10)
     rl_train.add_argument("--model-path", type=Path, default=Path("models/galaga_ppo.zip"))
     rl_train.add_argument("--resume-from", type=Path, default=None)
     rl_train.add_argument("--device", default="cpu")
@@ -193,6 +214,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.inputs,
             min_confidence=args.min_confidence,
             include_audio_obs=args.audio_obs,
+            frame_stack=args.frame_stack,
         )
         result = train_bc(
             dataset,
@@ -215,6 +237,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 total_timesteps=args.timesteps,
                 num_envs=args.num_envs,
                 frames_per_decision=args.frames_per_decision,
+                frame_stack=args.frame_stack,
+                normalize_reward=args.normalize_reward,
+                gamma=args.gamma,
+                eval_freq=args.eval_freq,
+                eval_episodes=args.eval_episodes,
                 model_path=args.model_path,
                 resume_from=args.resume_from,
                 device=args.device,

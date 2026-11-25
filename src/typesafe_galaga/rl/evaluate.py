@@ -12,7 +12,7 @@ from stable_baselines3 import PPO
 
 from ..runner import DEFAULT_ROM_PATH
 from .env import GalagaRLEnv
-from .observations import infer_include_audio_from_shape
+from .observations import FrameStackBuffer, infer_obs_config_from_shape, observation_dim
 
 
 @dataclass(frozen=True)
@@ -66,9 +66,11 @@ def evaluate_policy(
     policy = model.policy
     policy.set_training_mode(False)
     policy_device = model.device
-    include_audio_obs = infer_include_audio_from_shape(
+    include_audio_obs, frame_stack = infer_obs_config_from_shape(
         getattr(model.observation_space, "shape", None)
     )
+    single_obs_dim = observation_dim(include_audio=include_audio_obs)
+    frame_buffer = FrameStackBuffer(single_obs_dim, frame_stack)
     env = GalagaRLEnv(
         rom_path=rom_path,
         frames_per_decision=frames_per_decision,
@@ -88,15 +90,17 @@ def evaluate_policy(
         with torch.inference_mode():
             for ep in range(episodes):
                 obs, info = env.reset(seed=seed + ep)
+                stacked_obs = frame_buffer.reset(obs)
                 terminated = False
                 truncated = False
                 ep_reward = 0.0
                 last_info = info
 
                 while not (terminated or truncated):
-                    obs_tensor = torch.as_tensor(obs, device=policy_device).unsqueeze(0)
+                    obs_tensor = torch.as_tensor(stacked_obs, device=policy_device).unsqueeze(0)
                     action = int(policy._predict(obs_tensor, deterministic=deterministic).item())
                     obs, reward, terminated, truncated, last_info = env.step(action)
+                    stacked_obs = frame_buffer.push(obs)
                     ep_reward += float(reward)
 
                 rewards.append(ep_reward)

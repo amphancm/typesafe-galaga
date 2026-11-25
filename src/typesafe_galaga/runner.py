@@ -10,7 +10,15 @@ from .actions import ACTION_TO_INDEX, FIRE_ACTIONS, FIRE_RELEASE_ACTION, JOYPAD_
 from .audio import AudioConfig, GalagaAudioEngine, extract_ram_audio_events
 from .dashboard import DashboardCommand, LiveDashboard
 from .policy import Decision, Policy
-from .state import OAM_END, OAM_START, PLAYER_Y, TILE_PLAYER_SHIP, GalagaStateParser, _read_score
+from .state import (
+    LIVES_RESERVE_ADDR,
+    OAM_END,
+    OAM_START,
+    PLAYER_Y,
+    TILE_PLAYER_SHIP,
+    GalagaStateParser,
+    _read_score,
+)
 
 DEFAULT_ROM_PATH = "roms/Galaga (U).nes"
 
@@ -28,6 +36,12 @@ def _unwrap_ram(env: Any) -> Any:
             return ram
         current = getattr(current, "env", None)
     return None
+
+
+def _read_reserve_lives(ram: Any) -> int | None:
+    if ram is None or len(ram) <= LIVES_RESERVE_ADDR:
+        return None
+    return int(ram[LIVES_RESERVE_ADDR])
 
 
 def _ship_present(ram: Any) -> bool:
@@ -82,13 +96,19 @@ class GalagaEnvWrapper:
         ram = self._nes_env.ram
         score = _read_score(ram)
         alive = _ship_present(ram)
+        reserve_lives = _read_reserve_lives(ram)
         if alive:
             self._absent_frames = 0
             self._was_alive = True
+            if reserve_lives is not None:
+                self._lives = reserve_lives + 1
         else:
             self._absent_frames += 1
             if self._was_alive and self._absent_frames >= 20:
-                self._lives = max(0, self._lives - 1)
+                if reserve_lives is not None:
+                    self._lives = reserve_lives
+                else:
+                    self._lives = max(0, self._lives - 1)
                 self._was_alive = False
 
         dead = self._lives <= 0

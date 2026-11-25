@@ -54,6 +54,9 @@ class HybridPolicy:
     def reset_episode(self) -> None:
         self._step = 0
         self._last_jev_step = -10_000
+        reset_fn = getattr(self.rl_policy, "reset_episode", None)
+        if callable(reset_fn):
+            reset_fn()
 
     def stats(self) -> HybridStats:
         total = self._rl_decisions + self._jev_decisions

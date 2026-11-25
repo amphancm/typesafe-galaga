@@ -4,7 +4,7 @@ from collections.abc import Sequence
 
 from ..actions import ACTION_TO_INDEX, FIRE_ACTIONS, FIRE_RELEASE_ACTION, Action
 
-# Canonical ordered 4-action space for NES Galaga.
+# Canonical ordered 6-action space for NES Galaga.
 RL_ACTIONS: tuple[Action, ...] = tuple(
     action for action, _ in sorted(ACTION_TO_INDEX.items(), key=lambda item: item[1])
 )
@@ -12,7 +12,7 @@ NUM_ACTIONS: int = len(RL_ACTIONS)
 
 
 def action_from_index(index: int) -> Action:
-    """Map an integer RL action index (0..3) to a Galaga Action enum."""
+    """Map an integer RL action index (0..5) to a Galaga Action enum."""
     idx = int(index)
     if idx < 0 or idx >= NUM_ACTIONS:
         raise ValueError(f"Action index {idx} out of range [0, {NUM_ACTIONS - 1}]")

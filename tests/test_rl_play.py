@@ -23,6 +23,15 @@ def test_cli_rl_play_defaults_to_galaga() -> None:
         assert parser.parse_args([subcmd]).audio_obs is True
         assert parser.parse_args([subcmd, "--no-audio-obs"]).audio_obs is False
 
+    train_args = parser.parse_args(["rl-train"])
+    assert train_args.timesteps == 5_000_000
+    assert train_args.frame_stack == 4
+    assert train_args.normalize_reward is True
+    assert train_args.gamma == 0.995
+    assert train_args.eval_freq == 200_000
+    assert parser.parse_args(["rl-train", "--no-normalize-reward"]).normalize_reward is False
+    assert parser.parse_args(["rl-bc"]).frame_stack == 1
+
 
 def test_play_rl_headless_with_stubbed_env_and_policy(monkeypatch: Any, tmp_path: Path) -> None:
     snap = GalagaSnapshot(

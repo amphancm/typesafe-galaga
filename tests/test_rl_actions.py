@@ -14,14 +14,16 @@ from typesafe_galaga.rl.actions import (
 
 
 def test_galaga_action_space_matches_joypad_movement() -> None:
-    assert NUM_ACTIONS == 4
-    assert len(RL_ACTIONS) == 4
-    assert len(JOYPAD_MOVEMENT) == 4
-    assert action_names() == ("noop", "left", "right", "fire")
+    assert NUM_ACTIONS == 6
+    assert len(RL_ACTIONS) == 6
+    assert len(JOYPAD_MOVEMENT) == 6
+    assert action_names() == ("noop", "left", "right", "fire", "left_fire", "right_fire")
     for idx, action in enumerate(RL_ACTIONS):
         assert action_from_index(idx) is action
         assert index_from_action(action) == idx
         assert index_from_action(action.value) == idx
+    assert FIRE_RELEASE_ACTION[Action.LEFT_FIRE] is Action.LEFT
+    assert FIRE_RELEASE_ACTION[Action.RIGHT_FIRE] is Action.RIGHT
 
 
 def test_action_from_index_rejects_out_of_range() -> None:

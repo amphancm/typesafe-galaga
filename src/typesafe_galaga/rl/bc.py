@@ -16,7 +16,7 @@ from stable_baselines3 import PPO
 
 from ..state import GalagaEnemy, GalagaProjectile, GalagaSnapshot
 from .actions import NUM_ACTIONS, RL_ACTIONS, index_from_action
-from .observations import OBSERVATION_DIM, encode_observation
+from .observations import OBSERVATION_DIM, FrameStackBuffer, encode_observation, observation_dim
 
 
 @dataclass(frozen=True)
@@ -140,8 +140,11 @@ def load_demonstrations(
     *,
     min_confidence: float = 0.0,
     include_audio_obs: bool = True,
+    frame_stack: int = 1,
 ) -> BCDataset:
     """Load Jev JSONL decision logs into numeric RL observation/action tensors."""
+    if frame_stack < 1:
+        raise ValueError("frame_stack must be at least 1")
     files = _expand_jsonl_paths(paths)
     if not files:
         raise FileNotFoundError(f"No JSONL demonstration files found in: {paths}")
@@ -150,8 +153,10 @@ def load_demonstrations(
     action_list: list[int] = []
     prob_list: list[np.ndarray] = []
     conf_list: list[float] = []
+    single_obs_dim = observation_dim(include_audio=include_audio_obs)
 
     for file_path in files:
+        frame_buffer = FrameStackBuffer(single_obs_dim, frame_stack)
         with file_path.open("r", encoding="utf-8") as handle:
             for line in handle:
                 stripped = line.strip()
@@ -171,6 +176,7 @@ def load_demonstrations(
 
                 snapshot = record_to_snapshot(record)
                 obs = encode_observation(snapshot, include_audio=include_audio_obs)
+                stacked_obs = frame_buffer.push(obs)
 
                 raw_probs = record.get("probabilities", {})
                 probs = np.zeros(NUM_ACTIONS, dtype=np.float32)
@@ -183,7 +189,7 @@ def load_demonstrations(
                 else:
                     probs[action_idx] = 1.0
 
-                obs_list.append(obs)
+                obs_list.append(stacked_obs)
                 action_list.append(action_idx)
                 prob_list.append(probs)
                 conf_list.append(confidence)
@@ -355,6 +361,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=True,
         help="Include semantic audio event flags in BC observations (default: enabled)",
     )
+    parser.add_argument(
+        "--frame-stack",
+        type=int,
+        default=1,
+        help="Number of consecutive observation steps to stack (default: 1)",
+    )
     return parser
 
 
@@ -364,6 +376,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.inputs,
         min_confidence=args.min_confidence,
         include_audio_obs=args.audio_obs,
+        frame_stack=args.frame_stack,
     )
     result = train_bc(
         dataset,

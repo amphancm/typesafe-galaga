@@ -12,6 +12,7 @@ OAM_END = 0x0800
 PLAYER_X_ADDR = 0x0203
 SCORE_DIGITS_ADDR = 0x00E0
 SCORE_DIGITS_LEN = 7
+LIVES_RESERVE_ADDR = 0x0487
 
 TILE_PLAYER_SHIP = 0x00
 TILE_PLAYER_BULLET = 0xF6
@@ -334,15 +335,21 @@ def _build_radar_grid(
 ) -> tuple[str, ...]:
     grid = [["."] * RADAR_COLS for _ in range(RADAR_ROWS)]
 
-    for e in enemies:
-        r, c = _to_radar_cell(e.x, e.y)
-        grid[r][c] = "D" if e.diving else "E"
-    for p in projectiles:
-        r, c = _to_radar_cell(p.x, p.y)
-        grid[r][c] = "!"
+    # Draw in ascending threat priority so player bullets never hide enemies or projectiles.
     for bx, by in bullets:
         r, c = _to_radar_cell(bx, by)
         grid[r][c] = "|"
+    for e in enemies:
+        if not e.diving:
+            r, c = _to_radar_cell(e.x, e.y)
+            grid[r][c] = "E"
+    for e in enemies:
+        if e.diving:
+            r, c = _to_radar_cell(e.x, e.y)
+            grid[r][c] = "D"
+    for p in projectiles:
+        r, c = _to_radar_cell(p.x, p.y)
+        grid[r][c] = "!"
     pr, pc = _to_radar_cell(player_x, PLAYER_Y)
     grid[pr][pc] = "A"
     return tuple("".join(row) for row in grid)

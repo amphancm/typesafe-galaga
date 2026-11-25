@@ -8,13 +8,14 @@ from ..state import GalagaSnapshot
 @dataclass(frozen=True, slots=True)
 class RewardConfig:
     score_scale: float = 0.01
-    score_bonus_cap: float = 10.0
-    survival_bonus: float = 0.01
-    alignment_bonus: float = 0.02
-    fire_when_aligned_bonus: float = 0.05
+    score_bonus_cap: float = 100.0
+    survival_bonus: float = 0.005
+    alignment_bonus: float = 0.01
+    fire_when_aligned_bonus: float = 0.04
     life_lost_penalty: float = -10.0
     death_penalty: float = -20.0
     stage_clear_bonus: float = 25.0
+    stage_clear_cooldown_steps: int = 50
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,9 +45,12 @@ class GalagaRewardCalculator:
 
     def __init__(self, config: RewardConfig | None = None) -> None:
         self.config = config or RewardConfig()
+        self._highest_stage: int = 1
+        self._steps_since_stage_clear: int = self.config.stage_clear_cooldown_steps
 
     def reset(self, initial_snapshot: GalagaSnapshot) -> None:
-        del initial_snapshot
+        self._highest_stage = initial_snapshot.stage
+        self._steps_since_stage_clear = self.config.stage_clear_cooldown_steps
 
     def compute(
         self,
@@ -58,7 +62,18 @@ class GalagaRewardCalculator:
     ) -> RewardBreakdown:
         cfg = self.config
         is_dead = bool(died or current.dead)
-        is_clear = bool(cleared or current.clear)
+        self._steps_since_stage_clear += 1
+
+        stage_advanced = current.stage > self._highest_stage
+        audio_stage_clear = (
+            "stage_clear" in current.audio_events
+            and "stage_clear" not in previous.audio_events
+            and self._steps_since_stage_clear >= cfg.stage_clear_cooldown_steps
+        )
+        is_clear = bool(cleared or current.clear or stage_advanced or audio_stage_clear)
+        if is_clear:
+            self._highest_stage = max(self._highest_stage, current.stage)
+            self._steps_since_stage_clear = 0
 
         delta_score = max(0, current.score - previous.score)
         score_reward = min(delta_score * cfg.score_scale, cfg.score_bonus_cap)

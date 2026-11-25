@@ -27,8 +27,8 @@ _AUDIO_EVENT_ALIASES: dict[str, str] = {
     "galaga": "stage_start",
 }
 
-# 15 player/tactical + 4 prev_action + 24 enemies (6*4) + 12 projectiles (4*3) + 99 radar grid = 154
-# + 10 semantic audio event flags = 164
+# 15 player/tactical + 6 prev_action + 24 enemies (6*4) + 12 projectiles (4*3) + 99 radar grid = 156
+# + 10 semantic audio event flags = 166
 SCALAR_FEATURE_DIM = 15 + NUM_ACTIONS + (MAX_OBSERVED_ENEMIES * 4) + (MAX_OBSERVED_PROJECTILES * 3)
 BASE_OBSERVATION_DIM = SCALAR_FEATURE_DIM + GRID_CELLS
 OBSERVATION_DIM = BASE_OBSERVATION_DIM + AUDIO_EVENT_DIM
@@ -58,19 +58,52 @@ def observation_dim(*, include_audio: bool = True) -> int:
     return OBSERVATION_DIM if include_audio else BASE_OBSERVATION_DIM
 
 
-def infer_include_audio_from_shape(obs_shape: tuple[int, ...] | None) -> bool:
-    """Infer whether a saved policy expects audio flags from its observation_space.shape."""
+def infer_obs_config_from_shape(obs_shape: tuple[int, ...] | None) -> tuple[bool, int]:
+    """Infer (include_audio, frame_stack) from a saved policy's observation_space.shape."""
     if obs_shape is None or len(obs_shape) != 1:
-        return True
+        return True, 1
     dim = int(obs_shape[0])
-    if dim == BASE_OBSERVATION_DIM:
-        return False
-    if dim == OBSERVATION_DIM:
-        return True
+    if dim > 0 and dim % OBSERVATION_DIM == 0:
+        return True, dim // OBSERVATION_DIM
+    if dim > 0 and dim % BASE_OBSERVATION_DIM == 0:
+        return False, dim // BASE_OBSERVATION_DIM
     raise ValueError(
-        f"Unsupported observation dimension {dim}; expected {BASE_OBSERVATION_DIM} "
+        f"Unsupported observation dimension {dim}; expected a multiple of {BASE_OBSERVATION_DIM} "
         f"(without audio) or {OBSERVATION_DIM} (with audio)"
     )
+
+
+def infer_include_audio_from_shape(obs_shape: tuple[int, ...] | None) -> bool:
+    """Infer whether a saved policy expects audio flags from its observation_space.shape."""
+    include_audio, _ = infer_obs_config_from_shape(obs_shape)
+    return include_audio
+
+
+class FrameStackBuffer:
+    """1D observation frame-stack buffer matching SB3 VecFrameStack layout."""
+
+    def __init__(self, obs_dim: int, n_stack: int = 1) -> None:
+        if obs_dim < 1:
+            raise ValueError("obs_dim must be at least 1")
+        if n_stack < 1:
+            raise ValueError("n_stack must be at least 1")
+        self.obs_dim = int(obs_dim)
+        self.n_stack = int(n_stack)
+        self._buf = np.zeros(self.obs_dim * self.n_stack, dtype=np.float32)
+
+    def reset(self, initial_obs: np.ndarray | None = None) -> np.ndarray:
+        self._buf.fill(0.0)
+        if initial_obs is not None:
+            return self.push(initial_obs)
+        return self._buf.copy()
+
+    def push(self, obs: np.ndarray) -> np.ndarray:
+        arr = np.asarray(obs, dtype=np.float32)
+        if self.n_stack == 1:
+            return arr
+        self._buf[: -self.obs_dim] = self._buf[self.obs_dim :]
+        self._buf[-self.obs_dim :] = arr
+        return self._buf.copy()
 
 
 def encode_audio_events(audio_events: Sequence[str]) -> np.ndarray:

@@ -11,8 +11,10 @@ from typesafe_galaga.rl.observations import (
     AUDIO_EVENT_INDEX,
     BASE_OBSERVATION_DIM,
     OBSERVATION_DIM,
+    FrameStackBuffer,
     encode_observation,
     infer_include_audio_from_shape,
+    infer_obs_config_from_shape,
 )
 from typesafe_galaga.state import GalagaEnemy, GalagaProjectile, GalagaSnapshot
 
@@ -95,11 +97,12 @@ def test_encode_observation_populates_slots_and_radar() -> None:
     )
     obs = encode_observation(snap)
     assert obs[15 + 3] == 1.0  # previous action one-hot for "fire"
-    assert obs[19] == 1.0  # first enemy present
-    assert obs[19 + 4 + 2] == 1.0  # second enemy empty-slot dy sentinel
-    assert obs[19 + 24] == 1.0  # first projectile present
-    assert obs[19 + 24 + 3 + 2] == 1.0  # second projectile empty-slot dy sentinel
-    radar_start = 15 + 4 + 24 + 12
+    enemy_start = 15 + 6
+    assert obs[enemy_start] == 1.0  # first enemy present
+    assert obs[enemy_start + 4 + 2] == 1.0  # second enemy empty-slot dy sentinel
+    assert obs[enemy_start + 24] == 1.0  # first projectile present
+    assert obs[enemy_start + 24 + 3 + 2] == 1.0  # second projectile empty-slot dy sentinel
+    radar_start = enemy_start + 24 + 12
     assert obs[radar_start] == np.float32(0.5)  # "E" at (0, 0)
     assert obs[radar_start + 8 * 11 + 5] == np.float32(-1.0)  # "A" at (8, 5)
 
@@ -108,7 +111,7 @@ def test_galaga_rl_env_reset_and_step() -> None:
     env = GalagaRLEnv(adapter=_FakeAdapter(), max_steps=10)
     obs, info = env.reset(seed=42)
     assert obs.shape == (OBSERVATION_DIM,)
-    assert env.action_space.n == 4
+    assert env.action_space.n == 6
     assert info["lives"] == 3
 
     obs2, reward, terminated, truncated, info2 = env.step(3)
@@ -145,8 +148,18 @@ def test_encode_observation_audio_flags_and_legacy_mode() -> None:
 
     assert infer_include_audio_from_shape((OBSERVATION_DIM,)) is True
     assert infer_include_audio_from_shape((BASE_OBSERVATION_DIM,)) is False
+    assert infer_obs_config_from_shape((OBSERVATION_DIM * 4,)) == (True, 4)
+    assert infer_obs_config_from_shape((BASE_OBSERVATION_DIM * 4,)) == (False, 4)
     with pytest.raises(ValueError, match="Unsupported observation dimension"):
         infer_include_audio_from_shape((99,))
+
+
+def test_frame_stack_buffer_matches_sb3_layout() -> None:
+    buf = FrameStackBuffer(obs_dim=3, n_stack=3)
+    s0 = buf.reset(np.array([1.0, 2.0, 3.0], dtype=np.float32))
+    assert np.array_equal(s0, np.array([0, 0, 0, 0, 0, 0, 1, 2, 3], dtype=np.float32))
+    s1 = buf.push(np.array([4.0, 5.0, 6.0], dtype=np.float32))
+    assert np.array_equal(s1, np.array([0, 0, 0, 1, 2, 3, 4, 5, 6], dtype=np.float32))
 
 
 def test_extract_ram_audio_events_combines_active_and_triggered_slots() -> None:

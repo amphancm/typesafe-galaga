@@ -44,6 +44,9 @@ def test_load_demonstrations_and_train_bc(tmp_path: Path) -> None:
     legacy_dataset = load_demonstrations([log_file], min_confidence=0.5, include_audio_obs=False)
     assert legacy_dataset.observations.shape == (24, BASE_OBSERVATION_DIM)
 
+    stacked_dataset = load_demonstrations([log_file], min_confidence=0.5, frame_stack=4)
+    assert stacked_dataset.observations.shape == (24, OBSERVATION_DIM * 4)
+
     model_path = tmp_path / "galaga_bc.zip"
     result = train_bc(dataset, model_path=model_path, epochs=3, batch_size=8)
     assert result.model_path.exists()
