@@ -6,17 +6,18 @@ learning (PPO) agent—choose NES controller inputs for **Galaga**.
 The controllers do not receive screenshots. The harness parses emulator RAM and OAM
 sprite data into structured state containing the player's position, bullets, enemies,
 projectiles, tactical danger cues, score, lives, stage, and semantic sound event flags.
-Jev receives this state as JSON; the RL policy receives a bounded 164-dimensional numeric
-observation (154 state/radar features + 10 semantic audio event flags). Each controller
+Jev receives this state as JSON; the RL policy receives a bounded 166-dimensional numeric
+observation per step (156 state/radar features + 10 semantic audio event flags), stacked
+across 4 consecutive decision steps (664 dimensions total) by default. Each controller
 action advances the emulator before the next decision.
 
 ```text
-NES emulator -> RAM/OAM + sound flags -> structured JSON -> Jev Choice -> controller input
-                                      -> 164-dim vector  -> PPO Policy -> controller input
-                                                         -> Hybrid (PPO + Jev escalation)
+NES emulator -> RAM/OAM + sound flags -> structured JSON   -> Jev Choice -> controller input
+                                      -> 166x4 (664) stack -> PPO Policy -> controller input
+                                                           -> Hybrid (PPO + Jev escalation)
 ```
 
-The controller actions are `noop`, `left`, `right`, `fire`.
+The controller actions are `noop`, `left`, `right`, `fire`, `left_fire`, `right_fire`.
 
 ## Requirements
 
@@ -65,105 +66,115 @@ set to `dashboard` (default), `game`, or `none`. Each decision is logged as JSON
 
 The parsed JSON groups observations into `player`, `tactical`, `hazards`,
 `reaction_timing`, `recent_control`, `episode`, and `audio` (semantic sound event flags).
-The debug snapshot additionally includes sprite details and a radar grid (`A` player,
-`|` player bullet, `E` enemy, `D` diving enemy, `!` enemy projectile).
+The debug snapshot additionally includes sprite details and a threat-prioritized radar
+grid (`A` player, `!` enemy projectile, `D` diving enemy, `E` formation enemy, `|` player
+bullet).
 
 ## Reinforcement learning
 
-The Gymnasium environment encodes each snapshot as a 164-dimensional `float32` vector
+The Gymnasium environment encodes each snapshot as a 166-dimensional `float32` vector
 in `[-1.0, 1.0]`:
 
 - **Player & tactical summary (15):** normalized position, velocity, alive status, active
-  bullets, lives, danger/evasion cues, enemy/projectile counts, target delta, bullet positions
-- **Previous action one-hot (4):** `noop`, `left`, `right`, `fire`
+  bullets, lives (read directly from NES RAM `$0487`), danger/evasion cues,
+  enemy/projectile counts, target delta, bullet positions
+- **Previous action one-hot (6):** `noop`, `left`, `right`, `fire`, `left_fire`,
+  `right_fire`
 - **Top 6 enemies (24):** presence, `dx`, `dy`, diving flag
 - **Top 4 projectiles (12):** presence, `dx`, `dy`
-- **9x11 radar occupancy grid (99)**
-- **Semantic audio event flags (10, indices `154..163`):** `laser_shot`, `enemy_hit`,
+- **9x11 threat-prioritized radar occupancy grid (99)**
+- **Semantic audio event flags (10, indices `156..165`):** `laser_shot`, `enemy_hit`,
   `boss_hit`, `boss_destroy`, `dive_swoop`, `ship_explode`, `one_up`, `stage_clear`,
   `stage_start`, `ambient`
+
+By default, `rl-train` stacks **4 consecutive decision steps** (`--frame-stack 4`) into a
+**664-dimensional** observation (`166 × 4`, or `624` with `--no-audio-obs`), giving the
+policy explicit motion history for diving enemies and projectiles.
 
 Instead of rendering audio waveforms during headless training, audio event flags are read
 directly from Galaga's live NES RAM sound engine (`$0580-$06E7`) across every frame of a
 decision step (capturing both newly triggered and currently active sounds), with automatic
-snapshot-transition fallback when RAM is unavailable. See [docs/audio_rl.md](docs/audio_rl.md)
-for the full architecture, slot mapping, and guide for custom games.
+snapshot-transition fallback when RAM is unavailable. See:
 
-Audio observations are **enabled by default** (`--audio-obs`). Pass `--no-audio-obs` to
-`rl-train` or `rl-bc` to use the legacy 154-dim observation vector; `rl-eval` and
-`rl-play` automatically detect the observation dimension from the saved model. The PPO
-reward uses score gain, survival, safe firing alignment, lost lives, death, and stage
-clear.
+- [docs/ppo_v2.md](docs/ppo_v2.md) — full breakdown of the PPO v2 architecture, 6-action
+  move-and-shoot space, 4-step frame stacking, reward shaping, asymmetric actor-critic
+  network, and training pipeline.
+- [docs/audio_rl.md](docs/audio_rl.md) — semantic audio event architecture, NES RAM slot
+  mapping, and guide for custom games.
+
+Audio observations (`--audio-obs`), 4-step frame stacking (`--frame-stack 4`), and reward
+normalization (`--normalize-reward`) are **enabled by default** in `rl-train`. Pass
+`--no-audio-obs` or `--frame-stack 1` to disable them; `rl-eval` and `rl-play`
+automatically detect both audio flags and frame stack depth from the saved model's
+observation shape.
 
 All RL commands (`rl-bc`, `rl-train`, `rl-eval`, `rl-play`) default to `--device cpu`,
 which is recommended for the `MlpPolicy` network. Pass `--device cuda` (or
 `--device auto`) to run on a GPU instead.
 
-### Benchmark: Audio-aware (164-dim) vs Legacy (154-dim)
+### Benchmark: PPO v2 vs v1 Audio vs v1 Legacy
 
 Evaluated under identical conditions (20 deterministic episodes, `seed=1000`,
-`frames_per_decision=4`, `random_noop_max=4`, trained for `1,500,000` timesteps):
+`frames_per_decision=4`, `random_noop_max=4`):
 
-| Model | Obs Dim | Mean Score | Min Score | Max Score | Mean Reward (± std) | Mean Steps |
-| --- | :---: | :---: | :---: | :---: | :---: | :---: |
-| `models/galaga_ppo_best.zip` (legacy) | 154 | `17,624.0` | `10,160` | `21,600` | `156.16 ± 48.03` | `1,729.5` |
-| `models/galaga_ppo_audio_best.zip` | 164 | `18,698.0` (+6.1%) | `10,290` | `24,530` | `164.77 ± 67.15` | `1,729.0` |
-| `models/galaga_ppo_audio.zip` | 164 | **`18,945.5`** (+7.5%) | **`10,490`** | **`25,000`** | **`169.83 ± 65.19`** | **`1,971.9`** |
+| Model | Actions | Obs Dim | Steps | Mean Score | Min Score | Max Score | Mean Reward (± std) | Mean Steps |
+| --- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| `models/galaga_ppo_best.zip` (v1 legacy) | 4 | 154 | 1.5M | `17,624.0` | `10,160` | `21,600` | `156.16 ± 48.03` | `1,729.5` |
+| `models/galaga_ppo_audio_best.zip` (v1) | 4 | 164 | 1.5M | `18,698.0` (+6.1%) | `10,290` | `24,530` | `164.77 ± 67.15` | `1,729.0` |
+| `models/galaga_ppo_audio.zip` (v1) | 4 | 164 | 1.5M | `18,945.5` (+7.5%) | `10,490` | `25,000` | `169.83 ± 65.19` | `1,971.9` |
+| `models/galaga_ppo_v2_best.zip` (v2) | 6 | 664 (`166×4`) | 4.6M | `25,053.5` (+42.2%) | `10,250` | `37,770` | `223.28 ± 89.96` | `2,378.0` |
+| `models/galaga_ppo_v2.zip` (v2) | 6 | 664 (`166×4`) | 5.0M | **`31,269.5`** (+77.4%) | **`20,930`** | **`51,370`** | **`287.57 ± 141.78`** | **`2,831.0`** |
 
 ### Behavior cloning
 
-Pretrain a PPO-compatible policy from Jev JSONL decision logs (164-dim by default, or add
-`--no-audio-obs` for 154-dim):
+Pretrain a PPO-compatible policy from Jev JSONL decision logs (`166`-dim by default; add
+`--frame-stack 4` to match PPO v2's `664`-dim input, or `--no-audio-obs` to omit audio
+flags):
 
 ```bash
 .venv/bin/typesafe-galaga rl-bc \
-  --inputs artifacts --model-path models/galaga_bc.zip --epochs 30
+  --inputs artifacts --model-path models/galaga_bc.zip --frame-stack 4 --epochs 30
 ```
 
 ### Training and evaluation
 
-Train an audio-aware PPO agent in parallel emulator workers. Checkpoints go to
-`models/checkpoints/`, the final model to `models/galaga_ppo_audio.zip`, and the best
-checkpoint to `models/galaga_ppo_audio_best.zip`:
+Train a PPO v2 agent in parallel emulator workers (defaults: `5,000,000` timesteps,
+`--frame-stack 4`, `--audio-obs`, `--normalize-reward`, `--gamma 0.995`, periodic
+deterministic evaluation every `200,000` steps). Checkpoints go to `models/checkpoints/`,
+the final model to `--model-path`, and the best deterministic-eval checkpoint to
+`<stem>_best.zip`:
 
 ```bash
 .venv/bin/typesafe-galaga rl-train \
-  --rom "roms/Galaga (U).nes" --timesteps 1500000 --num-envs 8 \
-  --model-path models/galaga_ppo_audio.zip --device cuda
+  --rom "roms/Galaga (U).nes" --timesteps 5000000 --num-envs 8 \
+  --model-path models/galaga_ppo_v2.zip --device cuda
 ```
 
-Resume from a saved audio-aware policy with `--resume-from`:
+Resume from a saved v2 checkpoint with `--resume-from` (ensure `--audio-obs`/`--no-audio-obs`
+and `--frame-stack` match the checkpoint):
 
 ```bash
 .venv/bin/typesafe-galaga rl-train \
-  --rom "roms/Galaga (U).nes" --resume-from models/galaga_ppo_audio.zip \
-  --model-path models/galaga_ppo_audio.zip
+  --rom "roms/Galaga (U).nes" --resume-from models/galaga_ppo_v2.zip \
+  --model-path models/galaga_ppo_v2.zip
 ```
 
-To resume a legacy 154-dim model without audio flags, pass `--no-audio-obs`:
-
-```bash
-.venv/bin/typesafe-galaga rl-train \
-  --rom "roms/Galaga (U).nes" --resume-from models/galaga_ppo_best.zip \
-  --no-audio-obs
-```
-
-Evaluate any trained model (observation dimension is auto-detected):
+Evaluate any trained model (audio flags and frame-stack depth are auto-detected):
 
 ```bash
 .venv/bin/typesafe-galaga rl-eval \
-  --model models/galaga_ppo_audio.zip --rom "roms/Galaga (U).nes" \
-  --episodes 20 --output artifacts/eval_galaga_ppo_audio.json
+  --model models/galaga_ppo_v2.zip --rom "roms/Galaga (U).nes" \
+  --episodes 20 --output artifacts/eval_galaga_ppo_v2.json
 ```
 
 ### Playing and hybrid mode
 
-Watch a trained PPO policy in the telemetry dashboard (works with both 164-dim audio and
-legacy 154-dim models):
+Watch the trained PPO v2 policy in the telemetry dashboard (observation configuration is
+auto-detected from the model checkpoint):
 
 ```bash
 .venv/bin/typesafe-galaga rl-play \
-  --model models/galaga_ppo_audio.zip --rom "roms/Galaga (U).nes"
+  --model models/galaga_ppo_v2.zip --rom "roms/Galaga (U).nes"
 ```
 
 Add `--hybrid` to consult Jev when the RL policy has low confidence or detects a
@@ -171,7 +182,7 @@ high-risk situation. Hybrid mode requires `TYPESAFE_API_KEY`:
 
 ```bash
 .venv/bin/typesafe-galaga rl-play \
-  --model models/galaga_ppo_audio.zip --rom "roms/Galaga (U).nes" \
+  --model models/galaga_ppo_v2.zip --rom "roms/Galaga (U).nes" \
   --hybrid --confidence-threshold 0.55
 ```
 
@@ -180,7 +191,7 @@ To run on a GPU instead of the default CPU, pass `--device cuda` (works on `rl-b
 
 ```bash
 .venv/bin/typesafe-galaga rl-play \
-  --model models/galaga_ppo_audio.zip --rom "roms/Galaga (U).nes" \
+  --model models/galaga_ppo_v2.zip --rom "roms/Galaga (U).nes" \
   --hybrid --confidence-threshold 0.55 --device cuda
 ```
 
